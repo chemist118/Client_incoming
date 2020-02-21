@@ -4,6 +4,7 @@ import javafx.scene.control.DatePicker;
 import java.io.*;
 import java.net.Socket;
 import java.net.SocketException;
+import java.net.SocketTimeoutException;
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
@@ -27,7 +28,9 @@ public class Backend implements TasksDAO {
     public Boolean setSocket(String host, Integer port) {
         try {
             this.socket = new Socket(host, port); // set socket
-            Info = Load();
+            socket.setSoTimeout(10000);
+
+            Load();
             return true; // Connected
         } catch (IOException ex) {
             return false; // Can't connect to server
@@ -35,8 +38,8 @@ public class Backend implements TasksDAO {
     }
 
     @Override
-    public CopyOnWriteArrayList Load() {
-        CopyOnWriteArrayList<Task> temp = new CopyOnWriteArrayList<>();
+    public Boolean Load() {
+        CopyOnWriteArrayList<Task> temp;
         try {
             // Send a string command to the server
             dataToServer = new DataOutputStream(socket.getOutputStream()); // Create an output stream
@@ -46,16 +49,27 @@ public class Backend implements TasksDAO {
             temp = (CopyOnWriteArrayList<Task>) objectFromServer.readObject();
         } catch (SocketException ex) {
             System.out.println("Server offline");
+            return false;
         } catch (IOException | ClassNotFoundException ex) {
-            ex.printStackTrace();
+            System.out.println("Server error");
+            return false;
         }
-        return temp;
+        Info = temp;
+        return true;
     }
 
     @Override
     public Boolean Synchronize() {
-        Info = Load();
-        return true;
+        boolean SyncNeeded = false;
+        CopyOnWriteArrayList<Task> oldInfo = Info;
+        if (!Load()) return false;
+        if (oldInfo.size() == Info.size()) {
+            for (int i = 0; i < oldInfo.size(); i++) {
+                SyncNeeded = SyncNeeded | !oldInfo.get(i).equals(Info.get(i));
+            }
+        } else SyncNeeded = true;
+        if (SyncNeeded) Info = oldInfo;
+        return SyncNeeded;
     }
 
     @Override
@@ -88,7 +102,7 @@ public class Backend implements TasksDAO {
     }
 
     @Override
-    public void Remove(Task task) {
+    public Boolean Remove(Task task) {
         try {
             // Send a string command to the server
             dataToServer = new DataOutputStream(socket.getOutputStream()); // Create an output stream
@@ -101,13 +115,20 @@ public class Backend implements TasksDAO {
             boolean isOK = dataFromServer.readBoolean();
             if (isOK)
                 task.setArchived(true);
+        } catch (SocketException ex) {
+            System.out.println("Server is Offline");
+            return false;
+        } catch (SocketTimeoutException ex) {
+            System.out.println("Timeout");
+            return false;
         } catch (IOException ex) {
-            ex.printStackTrace();
+            return false;
         }
+        return true;
     }
 
     @Override
-    public void Update(Task newTask) {
+    public Boolean Update(Task newTask) {
         try {
             // Send a string command to the server
             dataToServer = new DataOutputStream(socket.getOutputStream()); // Create an output stream
@@ -116,9 +137,16 @@ public class Backend implements TasksDAO {
             // Send a Task
             objectToServer = new ObjectOutputStream(socket.getOutputStream());
             objectToServer.writeObject(newTask);
+        } catch (SocketException ex) {
+            System.out.println("Server is Offline");
+            return false;
+        } catch (SocketTimeoutException ex) {
+            System.out.println("Timeout");
+            return false;
         } catch (IOException ex) {
-            ex.printStackTrace();
+            return false;
         }
+        return true;
     }
 
     @Override
