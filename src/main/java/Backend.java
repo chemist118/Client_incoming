@@ -29,12 +29,16 @@ public class Backend implements TasksDAO {
         try {
             this.socket = new Socket(host, port); // set socket
             socket.setSoTimeout(10000);
-
             Load();
             return true; // Connected
         } catch (IOException ex) {
             return false; // Can't connect to server
         }
+    }
+
+    @Override
+    public void reconnect() {
+        setSocket(socket.getInetAddress().getHostName(), socket.getPort());
     }
 
     @Override
@@ -49,9 +53,11 @@ public class Backend implements TasksDAO {
             temp = (CopyOnWriteArrayList<Task>) objectFromServer.readObject();
         } catch (SocketException ex) {
             System.out.println("Server offline");
+            reconnect();
             return false;
         } catch (IOException | ClassNotFoundException ex) {
             System.out.println("Server error");
+            reconnect();
             return false;
         }
         Info = temp;
@@ -68,7 +74,6 @@ public class Backend implements TasksDAO {
                 SyncNeeded = SyncNeeded | !oldInfo.get(i).equals(Info.get(i));
             }
         } else SyncNeeded = true;
-        if (SyncNeeded) Info = oldInfo;
         return SyncNeeded;
     }
 
@@ -83,7 +88,7 @@ public class Backend implements TasksDAO {
     }
 
     @Override
-    public Task Add(Task task) {
+    public Boolean Add(Task task) {
         try {
             // Send a string command to the server
             dataToServer = new DataOutputStream(socket.getOutputStream()); // Create an output stream
@@ -95,10 +100,11 @@ public class Backend implements TasksDAO {
             // Get fixed task
             objectFromServer = new ObjectInputStream(socket.getInputStream());
             task = (Task) objectFromServer.readObject();
+            return true;
         } catch (IOException | ClassNotFoundException ex) {
-            ex.printStackTrace();
+            System.out.println("Server offline");
+            return false;
         }
-        return task;
     }
 
     @Override
