@@ -28,7 +28,7 @@ public class Backend implements TasksDAO {
     public Boolean setSocket(String host, Integer port) {
         try {
             this.socket = new Socket(host, port); // set socket
-            socket.setSoTimeout(10000);
+            socket.setSoTimeout(5000);
             Load();
             return true; // Connected
         } catch (IOException ex) {
@@ -38,11 +38,15 @@ public class Backend implements TasksDAO {
 
     @Override
     public void reconnect() {
-        setSocket(socket.getInetAddress().getHostName(), socket.getPort());
+        try {
+            this.socket = new Socket(socket.getInetAddress().getHostName(), socket.getPort()); // set socket
+            socket.setSoTimeout(5000);
+        } catch (IOException ignored) { // Can't connect to server
+        }
     }
 
     @Override
-    public Boolean Load() {
+    public synchronized Boolean Load() {
         CopyOnWriteArrayList<Task> temp;
         try {
             // Send a string command to the server
@@ -51,12 +55,12 @@ public class Backend implements TasksDAO {
             dataToServer.flush();
             objectFromServer = new ObjectInputStream(socket.getInputStream());
             temp = (CopyOnWriteArrayList<Task>) objectFromServer.readObject();
-        } catch (SocketException ex) {
-            System.out.println("Server offline");
+        } catch (SocketException | SocketTimeoutException ex) {
+            System.out.println("OnLoad: Server offline");
             reconnect();
             return false;
         } catch (IOException | ClassNotFoundException ex) {
-            System.out.println("Server error");
+            System.out.println("OnLoad: Server off");
             reconnect();
             return false;
         }
@@ -65,10 +69,13 @@ public class Backend implements TasksDAO {
     }
 
     @Override
-    public Boolean Synchronize() {
+    public synchronized Boolean Synchronize() {
         boolean SyncNeeded = false;
         CopyOnWriteArrayList<Task> oldInfo = Info;
-        if (!Load()) return false;
+        if (!Load()) {
+            reconnect();
+            return false;
+        }
         if (oldInfo.size() == Info.size()) {
             for (int i = 0; i < oldInfo.size(); i++) {
                 SyncNeeded = SyncNeeded | !oldInfo.get(i).equals(Info.get(i));
@@ -83,12 +90,14 @@ public class Backend implements TasksDAO {
     }
 
     @Override
-    public Task getTask(int index) {
-        return Info.get(index);
+    public Task getTask(int id) {
+        for (Task t : Info)
+            if (t.id == id) return t;
+        return Info.get(0);
     }
 
     @Override
-    public Boolean Add(Task task) {
+    public synchronized Boolean Add(Task task) {
         try {
             // Send a string command to the server
             dataToServer = new DataOutputStream(socket.getOutputStream()); // Create an output stream
@@ -101,14 +110,19 @@ public class Backend implements TasksDAO {
             objectFromServer = new ObjectInputStream(socket.getInputStream());
             task = (Task) objectFromServer.readObject();
             return true;
+        } catch (SocketException | SocketTimeoutException ex) {
+            System.out.println("OnAdd: Server offline, Timeout");
+            reconnect();
+            return false;
         } catch (IOException | ClassNotFoundException ex) {
-            System.out.println("Server offline");
+            System.out.println("OnAdd: Server offline");
+            reconnect();
             return false;
         }
     }
 
     @Override
-    public Boolean Remove(Task task) {
+    public synchronized Boolean Remove(Task task) {
         try {
             // Send a string command to the server
             dataToServer = new DataOutputStream(socket.getOutputStream()); // Create an output stream
@@ -122,19 +136,22 @@ public class Backend implements TasksDAO {
             if (isOK)
                 task.setArchived(true);
         } catch (SocketException ex) {
-            System.out.println("Server is Offline");
+            System.out.println("OnRemove: Server is Offline");
+            reconnect();
             return false;
         } catch (SocketTimeoutException ex) {
-            System.out.println("Timeout");
+            System.out.println("OnRemove: Timeout");
+            reconnect();
             return false;
         } catch (IOException ex) {
+            reconnect();
             return false;
         }
         return true;
     }
 
     @Override
-    public Boolean Update(Task newTask) {
+    public synchronized Boolean Update(Task newTask) {
         try {
             // Send a string command to the server
             dataToServer = new DataOutputStream(socket.getOutputStream()); // Create an output stream
@@ -144,123 +161,45 @@ public class Backend implements TasksDAO {
             objectToServer = new ObjectOutputStream(socket.getOutputStream());
             objectToServer.writeObject(newTask);
         } catch (SocketException ex) {
-            System.out.println("Server is Offline");
+            System.out.println("OnUpdate: Server offline");
+            reconnect();
             return false;
         } catch (SocketTimeoutException ex) {
-            System.out.println("Timeout");
+            System.out.println("OnUpdate: Timeout");
+            reconnect();
             return false;
         } catch (IOException ex) {
+            reconnect();
             return false;
         }
         return true;
     }
 
     @Override
-    public ArrayList<Task> filter(
-            Boolean isNotEnded,
-            Boolean isEnded,
-            Boolean isAll,
-            Boolean FireTasks,
-            String tags,
-            String Description,
-            int numOfSpecialFilter) {
-        ArrayList<Task> tempInfo = Info.stream().filter(x -> !x.getArchived()).collect(Collectors.toCollection(ArrayList::new));
-        Predicate<Task> typeOfTasks = x -> true;
-        Predicate<Task> isFireTask = x -> true;
-        Predicate<Task> haveDescription = x -> true;
-        Predicate<Task> haveTags = x -> true;
-        Predicate<Task> specialFilter = x -> true;
-
-        if (isNotEnded) { // неФП
-            typeOfTasks = x -> !x.getDone(); // ФП
+    public CopyOnWriteArrayList<Task> filter(String tag, String Description, int numOfFilter) {
+        CopyOnWriteArrayList<Task> temp = new CopyOnWriteArrayList<>();
+        try {
+            // Send a string command to the server
+            dataToServer = new DataOutputStream(socket.getOutputStream()); // Create an output stream
+            dataToServer.writeUTF("FILTER");
+            dataToServer.flush();
+            dataToServer = new DataOutputStream(socket.getOutputStream()); // Create an output stream
+            dataToServer.writeInt(numOfFilter);
+            dataToServer.writeUTF(tag);
+            dataToServer.writeUTF(Description);
+            dataToServer.flush();
+            // Get filtered list
+            objectFromServer = new ObjectInputStream(socket.getInputStream());
+            temp = (CopyOnWriteArrayList<Task>) objectFromServer.readObject();
+        } catch (SocketException | SocketTimeoutException ex) {
+            System.out.println("OnFilter: Server offline, Timeout");
+            reconnect();
+            return null;
+        } catch (IOException | ClassNotFoundException ex) {
+            System.out.println("OnFilter: Server offline");
+            reconnect();
+            return null;
         }
-
-        if (isEnded) // неФП
-            typeOfTasks = Mission::getDone; // ФП
-
-        if (isAll) // неФП
-            typeOfTasks = x -> true; // ФП
-
-        if (FireTasks) // неФП
-            isFireTask = x -> x.getDate().getValue().isBefore(LocalDate.now().plus(1, ChronoUnit.WEEKS)); // ФП
-
-        if (!tags.trim().isEmpty()) { // неФП
-            haveTags = task ->
-                    Stream.of(tags.split(","))
-                            .allMatch(userTag -> task.tags.stream().anyMatch(tag -> tag.equalsIgnoreCase(userTag))); // ФП
-        }
-
-
-        if (!Description.trim().isEmpty()) { // неФП
-            haveDescription = task ->
-                    task.description.toUpperCase().contains(Description.trim().toUpperCase()); // ФП
-        }
-
-        Comparator<DatePicker> comparator = (o1, o2) -> {
-            if (o1.getValue().isBefore(o2.getValue())) return -1;  //  неФП
-            if (o1.getValue().equals(o2.getValue())) return 0;
-            return 1;
-        };
-
-        tempInfo = tempInfo.parallelStream() // ФП
-                .filter(typeOfTasks)
-                .filter(isFireTask)
-                .filter(haveDescription)
-                .filter(haveTags)
-                .collect(Collectors.toCollection(ArrayList::new));
-
-        switch (numOfSpecialFilter) {
-            case 1: { //ФП
-                specialFilter = x -> x.getDate().getValue().isBefore(LocalDate.now().plus(1, ChronoUnit.MONTHS))
-                        && x.getDate().getValue().isAfter(LocalDate.now().minus(1, ChronoUnit.DAYS));
-                break;
-            }
-            case 2: { //ФП
-                specialFilter = task ->
-                        task.subtasks.stream().filter(Mission::getDone).count() >= (double) task.subtasks.size() / 2
-                                && task.subtasks.size() != 0;
-                break;
-            }
-            case 3: {
-                Map<String, Integer> tagsRating = new HashMap<>();
-                tempInfo.forEach(task ->  //ФП
-                        task.tags.forEach(tag -> {
-                            int count = Optional.ofNullable(tagsRating.get(tag.toUpperCase())).orElse(0);
-                            tagsRating.remove(tag.toUpperCase());
-                            tagsRating.put(tag.toUpperCase(), ++count);
-                        }));
-                List<String> mostPopularTags =
-                        tagsRating.entrySet().stream()  //ФП
-                                .sorted(Map.Entry.<String, Integer>comparingByValue().reversed())
-                                .limit(3)
-                                .map(Map.Entry::getKey)
-                                .collect(Collectors.toList());
-                specialFilter = task ->  //ФП
-                        task.getDate().getValue().isBefore(LocalDate.now()) &&
-                                mostPopularTags.stream()
-                                        .anyMatch(userTag -> task.tags.stream()
-                                                .anyMatch(tag -> tag.equalsIgnoreCase(userTag))); // ФП
-                break;
-            }
-            case 4: {  // ФП
-                tempInfo.removeIf(x -> x.getDate().getValue().isBefore(LocalDate.now()));
-                tempInfo = tempInfo.stream().sorted((o1, o2) -> comparator.compare(o1.getDate(), o2.getDate()))
-                        .limit(3)
-                        .collect(Collectors.toCollection(ArrayList::new));
-                break;
-            }
-            case 5: {  // ФП
-                tempInfo.removeIf(x -> !x.tags.isEmpty() || !x.haveDate);
-                tempInfo = tempInfo.stream().sorted((o1, o2) -> comparator.reversed().compare(o1.getDate(), o2.getDate()))
-                        .limit(4)
-                        .collect(Collectors.toCollection(ArrayList::new));
-            }
-        }
-
-        tempInfo = tempInfo.stream() // ФП
-                .filter(specialFilter)
-                .collect(Collectors.toCollection(ArrayList::new));
-
-        return tempInfo;
+        return temp;
     }
 }
